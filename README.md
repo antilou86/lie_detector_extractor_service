@@ -1,6 +1,6 @@
 # NLP Service
 
-Python microservice for NLP-based claim extraction using spaCy.
+Python microservice for NLP-based claim extraction using NLTK.
 
 ## Setup
 
@@ -21,22 +21,28 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 3. Download spaCy model
-```bash
-# Large model (recommended, ~560MB)
-python -m spacy download en_core_web_lg
+### 3. Download NLTK data (automatic)
+The service will automatically download required NLTK data on first run, including:
+- punkt (sentence tokenizer)
+- averaged_perceptron_tagger (POS tagging)
+- maxent_ne_chunker (named entity recognition)
+- words (word corpus)
 
-# Or small model (faster download, less accurate, ~12MB)
-python -m spacy download en_core_web_sm
+Or manually download:
+```bash
+python -c "import nltk; nltk.download('punkt'); nltk.download('averaged_perceptron_tagger'); nltk.download('maxent_ne_chunker'); nltk.download('words')"
 ```
 
 ### 4. Run the service
 ```bash
-# Development
-uvicorn main:app --reload --port 3002
+# Development (with auto-reload)
+python main.py
+
+# Or directly with Flask
+flask --app main run --port 3002 --debug
 
 # Production
-uvicorn main:app --host 0.0.0.0 --port 3002
+python main.py
 ```
 
 ## API Endpoints

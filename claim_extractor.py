@@ -1,16 +1,41 @@
 """
-Claim Extractor - Uses spaCy NLP to identify verifiable claims in text.
+Claim Extractor - Uses NLTK to identify verifiable claims in text.
 
 This module analyzes text to find sentences that contain verifiable factual claims,
 distinguishing them from opinions, questions, and general statements.
 """
 
-import spacy
-from spacy.tokens import Span, Doc
-from typing import List, Dict, Any, Optional
+import nltk
+from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 from enum import Enum
 import re
+
+
+# Download required NLTK data on import
+def download_nltk_data():
+    """Download required NLTK data packages."""
+    packages = [
+        ('tokenizers/punkt', 'punkt'),
+        ('tokenizers/punkt_tab', 'punkt_tab'),
+        ('taggers/averaged_perceptron_tagger', 'averaged_perceptron_tagger'),
+        ('taggers/averaged_perceptron_tagger_eng', 'averaged_perceptron_tagger_eng'),
+        ('chunkers/maxent_ne_chunker', 'maxent_ne_chunker'),
+        ('chunkers/maxent_ne_chunker_tab', 'maxent_ne_chunker_tab'),
+        ('corpora/words', 'words'),
+    ]
+    for path, package in packages:
+        try:
+            nltk.data.find(path)
+        except LookupError:
+            try:
+                nltk.download(package, quiet=True)
+            except Exception:
+                pass  # Some packages may not exist, that's ok
+
+
+# Download on module load
+download_nltk_data()
 
 
 class ClaimType(Enum):
@@ -38,7 +63,7 @@ class ExtractedClaim:
 
 class ClaimExtractor:
     """
-    Extracts verifiable claims from text using spaCy NLP.
+    Extracts verifiable claims from text using NLTK.
     """
     
     # Patterns that indicate a verifiable claim
@@ -103,35 +128,18 @@ class ClaimExtractor:
         r'^(?:please|kindly)',  # Requests
     ]
     
-    # Entity types that increase claim likelihood
-    HIGH_VALUE_ENTITIES = {
-        'ORG': 1.5,      # Organizations
-        'PERSON': 1.3,   # People
-        'GPE': 1.2,      # Countries/cities
-        'DATE': 1.3,     # Dates
-        'MONEY': 1.5,    # Money amounts
-        'PERCENT': 1.6,  # Percentages
-        'QUANTITY': 1.4, # Quantities
-        'CARDINAL': 1.2, # Numbers
-    }
+    # POS tags that indicate factual vs hedged language
+    PAST_TENSE_TAGS = {'VBD', 'VBN'}  # Past tense verbs
+    MODAL_TAGS = {'MD'}  # Modal verbs
     
     # Minimum thresholds
     MIN_SENTENCE_LENGTH = 40
     MAX_SENTENCE_LENGTH = 500
     MIN_CONFIDENCE = 0.4
     
-    def __init__(self, model_name: str = "en_core_web_lg"):
-        """Initialize with spaCy model."""
-        try:
-            self.nlp = spacy.load(model_name)
-        except OSError:
-            print(f"Model {model_name} not found. Trying en_core_web_sm...")
-            try:
-                self.nlp = spacy.load("en_core_web_sm")
-            except OSError:
-                raise RuntimeError(
-                    "No spaCy model found. Install with: python -m spacy download en_core_web_lg"
-                )
+    def __init__(self):
+        """Initialize the extractor."""
+        self.model_name = "nltk"
     
     def extract_claims(self, text: str, max_claims: int = 50) -> List[ExtractedClaim]:
         """
@@ -144,13 +152,25 @@ class ClaimExtractor:
         Returns:
             List of ExtractedClaim objects sorted by confidence
         """
-        # Process text with spaCy
-        doc = self.nlp(text)
+        # Tokenize into sentences
+        try:
+            sentences = nltk.sent_tokenize(text)
+        except Exception:
+            # Fallback to simple sentence splitting
+            sentences = re.split(r'(?<=[.!?])\s+', text)
         
         claims = []
+        char_offset = 0
         
-        for sent_idx, sent in enumerate(doc.sents):
-            sent_text = sent.text.strip()
+        for sent_idx, sent_text in enumerate(sentences):
+            sent_text = sent_text.strip()
+            
+            # Track character positions
+            char_start = text.find(sent_text, char_offset)
+            if char_start == -1:
+                char_start = char_offset
+            char_end = char_start + len(sent_text)
+            char_offset = char_end
             
             # Skip sentences that are too short or too long
             if len(sent_text) < self.MIN_SENTENCE_LENGTH:
@@ -159,7 +179,7 @@ class ClaimExtractor:
                 continue
             
             # Check if this looks like a claim
-            claim_analysis = self._analyze_sentence(sent, sent_text)
+            claim_analysis = self._analyze_sentence(sent_text)
             
             if claim_analysis['confidence'] >= self.MIN_CONFIDENCE:
                 claim = ExtractedClaim(
@@ -169,8 +189,8 @@ class ClaimExtractor:
                     entities=claim_analysis['entities'],
                     evidence_keywords=claim_analysis['evidence_keywords'],
                     sentence_index=sent_idx,
-                    char_start=sent.start_char,
-                    char_end=sent.end_char,
+                    char_start=char_start,
+                    char_end=char_end,
                 )
                 claims.append(claim)
         
@@ -178,7 +198,7 @@ class ClaimExtractor:
         claims.sort(key=lambda c: c.confidence, reverse=True)
         return claims[:max_claims]
     
-    def _analyze_sentence(self, sent: Span, sent_text: str) -> Dict[str, Any]:
+    def _analyze_sentence(self, sent_text: str) -> Dict[str, Any]:
         """
         Analyze a sentence to determine if it's a verifiable claim.
         """
@@ -210,34 +230,47 @@ class ClaimExtractor:
                         detected_type = claim_type
                     result['reasons'].append(f"Pattern match: {claim_type}")
         
-        # Analyze named entities
-        entities = []
-        for ent in sent.ents:
-            entities.append({
-                'text': ent.text,
-                'label': ent.label_,
-            })
-            
-            # Boost score for high-value entity types
-            if ent.label_ in self.HIGH_VALUE_ENTITIES:
-                score += 0.1 * self.HIGH_VALUE_ENTITIES[ent.label_]
-                result['reasons'].append(f"Entity: {ent.label_}")
+        # Tokenize and POS tag
+        try:
+            tokens = nltk.word_tokenize(sent_text)
+            pos_tags = nltk.pos_tag(tokens)
+        except Exception:
+            # Fallback: simple tokenization
+            tokens = sent_text.split()
+            pos_tags = [(t, 'NN') for t in tokens]
         
+        # Extract named entities
+        entities = self._extract_entities(pos_tags)
         result['entities'] = entities
         
+        # Boost for entity types
+        entity_labels = [e['label'] for e in entities]
+        if 'ORGANIZATION' in entity_labels:
+            score += 0.15
+        if 'PERSON' in entity_labels:
+            score += 0.13
+        if 'GPE' in entity_labels:  # Geo-political entity
+            score += 0.12
+        
+        # Boost for numbers (likely statistics)
+        num_count = sum(1 for _, tag in pos_tags if tag == 'CD')  # Cardinal numbers
+        if num_count > 0:
+            score += 0.12 * min(num_count, 3)
+            result['reasons'].append(f"Contains {num_count} numbers")
+        
         # Analyze verb tenses and modality
-        verb_analysis = self._analyze_verbs(sent)
+        verb_analysis = self._analyze_verbs(pos_tags)
         score += verb_analysis['score_modifier']
         result['reasons'].extend(verb_analysis['reasons'])
         
         # Check sentence structure
-        structure_score = self._analyze_structure(sent, sent_text)
+        structure_score = self._analyze_structure(pos_tags, sent_text)
         score += structure_score
         
         # Assign claim type
         if detected_type:
             result['claim_type'] = ClaimType(detected_type)
-        elif any(ent['label'] in ['PERCENT', 'MONEY', 'CARDINAL', 'QUANTITY'] for ent in entities):
+        elif num_count > 0:
             result['claim_type'] = ClaimType.STATISTIC
         
         # Cap confidence at 1.0
@@ -245,44 +278,83 @@ class ClaimExtractor:
         
         return result
     
-    def _analyze_verbs(self, sent: Span) -> Dict[str, Any]:
+    def _extract_entities(self, pos_tags: List[Tuple[str, str]]) -> List[Dict[str, str]]:
+        """Extract named entities using NLTK's chunker."""
+        entities = []
+        
+        try:
+            # Use NLTK's named entity chunker
+            chunks = nltk.ne_chunk(pos_tags)
+            
+            for chunk in chunks:
+                if hasattr(chunk, 'label'):
+                    entity_text = ' '.join(c[0] for c in chunk)
+                    entities.append({
+                        'text': entity_text,
+                        'label': chunk.label(),
+                    })
+        except Exception:
+            # Fallback: look for capitalized sequences (simple NER)
+            current_entity = []
+            for token, tag in pos_tags:
+                if tag.startswith('NNP'):  # Proper noun
+                    current_entity.append(token)
+                elif current_entity:
+                    entities.append({
+                        'text': ' '.join(current_entity),
+                        'label': 'ENTITY',
+                    })
+                    current_entity = []
+            
+            if current_entity:
+                entities.append({
+                    'text': ' '.join(current_entity),
+                    'label': 'ENTITY',
+                })
+        
+        return entities
+    
+    def _analyze_verbs(self, pos_tags: List[Tuple[str, str]]) -> Dict[str, Any]:
         """Analyze verbs for factual vs hedged language."""
         result = {'score_modifier': 0.0, 'reasons': []}
         
-        for token in sent:
-            if token.pos_ == 'VERB':
-                # Past tense often indicates factual claims
-                if token.tag_ in ['VBD', 'VBN']:  # Past tense verbs
-                    result['score_modifier'] += 0.05
-                    result['reasons'].append("Past tense verb")
-                
-                # Modal verbs reduce confidence
-                if token.tag_ == 'MD':
-                    result['score_modifier'] -= 0.1
-                    result['reasons'].append("Modal verb (hedging)")
-                
-                # Assertive verbs increase confidence
-                assertive_lemmas = {'prove', 'show', 'demonstrate', 'confirm', 'find', 
-                                   'discover', 'reveal', 'establish', 'indicate'}
-                if token.lemma_.lower() in assertive_lemmas:
-                    result['score_modifier'] += 0.15
-                    result['reasons'].append(f"Assertive verb: {token.lemma_}")
+        # Check for assertive verbs
+        assertive_verbs = {'prove', 'show', 'demonstrate', 'confirm', 'find', 
+                          'discover', 'reveal', 'establish', 'indicate',
+                          'proved', 'showed', 'demonstrated', 'confirmed', 'found',
+                          'discovered', 'revealed', 'established', 'indicated'}
+        
+        for token, tag in pos_tags:
+            # Past tense often indicates factual claims
+            if tag in self.PAST_TENSE_TAGS:
+                result['score_modifier'] += 0.05
+                result['reasons'].append("Past tense verb")
+            
+            # Modal verbs reduce confidence
+            if tag in self.MODAL_TAGS:
+                result['score_modifier'] -= 0.1
+                result['reasons'].append("Modal verb (hedging)")
+            
+            # Assertive verbs increase confidence
+            if token.lower() in assertive_verbs:
+                result['score_modifier'] += 0.15
+                result['reasons'].append(f"Assertive verb: {token}")
         
         return result
     
-    def _analyze_structure(self, sent: Span, sent_text: str) -> float:
+    def _analyze_structure(self, pos_tags: List[Tuple[str, str]], sent_text: str) -> float:
         """Analyze sentence structure for claim-like patterns."""
         score = 0.0
         
-        # Subject-verb-object structure is common in claims
-        has_subject = any(token.dep_ in ['nsubj', 'nsubjpass'] for token in sent)
-        has_object = any(token.dep_ in ['dobj', 'pobj', 'attr'] for token in sent)
+        # Check for subject-verb structure
+        has_noun = any(tag.startswith('NN') for _, tag in pos_tags)
+        has_verb = any(tag.startswith('VB') for _, tag in pos_tags)
         
-        if has_subject and has_object:
+        if has_noun and has_verb:
             score += 0.1
         
-        # Multiple clauses can indicate complex claims
-        num_verbs = sum(1 for token in sent if token.pos_ == 'VERB')
+        # Multiple verbs can indicate complex claims
+        num_verbs = sum(1 for _, tag in pos_tags if tag.startswith('VB'))
         if num_verbs >= 2:
             score += 0.05
         
@@ -298,9 +370,9 @@ class ClaimExtractor:
 _extractor: Optional[ClaimExtractor] = None
 
 
-def get_extractor(model_name: str = "en_core_web_lg") -> ClaimExtractor:
+def get_extractor() -> ClaimExtractor:
     """Get or create the claim extractor singleton."""
     global _extractor
     if _extractor is None:
-        _extractor = ClaimExtractor(model_name)
+        _extractor = ClaimExtractor()
     return _extractor
