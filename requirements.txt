@@ -1,0 +1,15 @@
+# NLP Service Dependencies
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+pydantic==2.5.3
+
+# NLP
+spacy==3.7.2
+# Download model with: python -m spacy download en_core_web_lg
+
+# Optional: For transformer-based claim classification
+# transformers==4.36.0
+# torch==2.1.2
+
+# Utilities
+python-dotenv==1.0.0
